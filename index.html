@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Analyst Agent</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --border: #dcdcd6; --accent: #2563eb; --accent-text: #ffffff;
+    --code-bg: #f0f0ec; --error: #b42318; --error-bg: #fef3f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515; --surface: #1f1f1f; --text: #ececea; --muted: #9a9a94;
+      --border: #333330; --accent: #5b8cff; --accent-text: #0b0b0b;
+      --code-bg: #121212; --error: #ff8a80; --error-bg: #2a1614;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: 8px; }
+  #drop {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 22px;
+    text-align: center; color: var(--muted); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop.over, #drop:hover { border-color: var(--accent); }
+  #drop.has-file { color: var(--text); border-style: solid; }
+  #file { display: none; }
+  textarea {
+    width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip {
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    border-radius: 999px; padding: 4px 12px; font-size: .82rem; cursor: pointer;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+  #run {
+    margin-top: 16px; width: 100%; padding: 12px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  #run:disabled { opacity: .5; cursor: not-allowed; }
+  .status { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+  .spinner {
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none !important; }
+  #answer { white-space: pre-wrap; margin: 0 0 12px; }
+  .meta { color: var(--muted); font-size: .85rem; }
+  img#chart { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); margin-top: 12px; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  pre {
+    background: var(--code-bg); border-radius: 8px; padding: 12px;
+    overflow-x: auto; font-size: .85rem; margin: 8px 0 0;
+  }
+  .error { background: var(--error-bg); color: var(--error); border-color: var(--error); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Data Analyst Agent</h1>
+  <p class="sub">Upload a CSV, ask a question, and the agent writes and runs the code in a sandbox.</p>
+
+  <div class="card">
+    <label>1. CSV file</label>
+    <div id="drop">Click to choose a CSV, or drop one here</div>
+    <input type="file" id="file" accept=".csv,text/csv">
+
+    <label style="margin-top:20px" for="question">2. Your question</label>
+    <textarea id="question" placeholder="e.g. Which month had the biggest revenue drop? Plot revenue by month."></textarea>
+    <div class="chips">
+      <button class="chip" type="button">Summarize this dataset</button>
+      <button class="chip" type="button">Which column has the most missing values?</button>
+      <button class="chip" type="button">Plot the distribution of the first numeric column</button>
+    </div>
+
+    <button id="run" type="button" disabled>Analyze</button>
+  </div>
+
+  <div id="status" class="card status hidden">
+    <div class="spinner"></div>
+    <span id="status-text">Writing code and running it in the sandbox…</span>
+  </div>
+
+  <div id="error" class="card error hidden"></div>
+
+  <div id="result" class="card hidden">
+    <p id="answer"></p>
+    <div class="meta" id="meta"></div>
+    <img id="chart" class="hidden" alt="Generated chart">
+    <details>
+      <summary>Show generated code</summary>
+      <pre><code id="code"></code></pre>
+    </details>
+  </div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const drop = $("drop"), fileInput = $("file"), question = $("question"), runBtn = $("run");
+  let file = null;
+
+  function refresh() {
+    runBtn.disabled = !(file && question.value.trim());
+  }
+
+  function setFile(f) {
+    if (!f) return;
+    file = f;
+    drop.textContent = "📄 " + f.name + " (" + (f.size / 1024).toFixed(1) + " KB)";
+    drop.classList.add("has-file");
+    refresh();
+  }
+
+  drop.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    setFile(e.dataTransfer.files[0]);
+  });
+  question.addEventListener("input", refresh);
+  document.querySelectorAll(".chip").forEach((c) =>
+    c.addEventListener("click", () => { question.value = c.textContent; refresh(); question.focus(); })
+  );
+  question.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !runBtn.disabled) runBtn.click();
+  });
+
+  runBtn.addEventListener("click", async () => {
+    $("error").classList.add("hidden");
+    $("result").classList.add("hidden");
+    $("status").classList.remove("hidden");
+    runBtn.disabled = true;
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("question", question.value.trim());
+
+    try {
+      const res = await fetch("/analyze", { method: "POST", body: form });
+      if (!res.ok) throw new Error("Server returned " + res.status + ": " + (await res.text()));
+      const data = await res.json();
+
+      $("answer").textContent = data.answer;
+      $("code").textContent = data.code || "";
+      $("meta").textContent = data.retries
+        ? "Needed " + data.retries + " retr" + (data.retries === 1 ? "y" : "ies") + " to get working code."
+        : "Worked on the first attempt.";
+
+      const img = $("chart");
+      if (data.chart_base64_png) {
+        img.src = "data:image/png;base64," + data.chart_base64_png;
+        img.classList.remove("hidden");
+      } else {
+        img.classList.add("hidden");
+      }
+      $("result").classList.remove("hidden");
+    } catch (err) {
+      $("error").textContent = err.message;
+      $("error").classList.remove("hidden");
+    } finally {
+      $("status").classList.add("hidden");
+      refresh();
+    }
+  });
+</script>
+</body>
+</html>
